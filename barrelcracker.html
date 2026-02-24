@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Peg Solitaire (Triangle)</title>
+  <style>
+    :root{ --cell: 44px; --gap: 10px; --bg:#0b0c10; --card:#141824; --stroke:#252c3f; --stroke2:#2c3653; --text:#e9eef6; }
+    @media (max-width: 520px){ :root{ --cell: 56px; --gap: 12px; } }
+
+    html,body{ height:100%; }
+    body{
+      margin:0;
+      padding:max(16px, env(safe-area-inset-top)) 16px max(18px, env(safe-area-inset-bottom));
+      background:var(--bg); color:var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      -webkit-text-size-adjust:100%;
+      touch-action: manipulation;
+    }
+    button, select, .cell { touch-action: manipulation; }
+
+    .wrap{ max-width:920px; margin:0 auto; display:grid; gap:14px; }
+    h1{ font-size:18px; margin:0; font-weight:700; letter-spacing:.2px; }
+
+    .panel{
+      background:var(--card); border:1px solid var(--stroke);
+      border-radius:16px; padding:14px; display:grid; gap:10px;
+    }
+    .row{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    select, button{
+      background:#1b2235; color:var(--text);
+      border:1px solid var(--stroke2); border-radius:12px;
+      padding:12px 14px; cursor:pointer; font-size:15px; line-height:1;
+    }
+    button:active{ transform: translateY(1px); }
+
+    .status{ opacity:.95; line-height:1.35; font-size:14px; }
+    .small{ font-size:12.5px; opacity:.78; line-height:1.35; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .board{
+      background:#111626; border:1px solid var(--stroke);
+      border-radius:18px; padding:18px 14px 22px;
+      overflow-x:auto; -webkit-overflow-scrolling:touch;
+    }
+    .tri{ display:grid; gap:var(--gap); justify-content:center; min-width:max-content; }
+    .tri-row{ display:flex; gap:var(--gap); justify-content:center; }
+
+    .cell{
+      width:var(--cell); height:var(--cell);
+      border-radius:999px; display:grid; place-items:center;
+      border:1px solid var(--stroke2);
+      position:relative; user-select:none;
+      transition: transform .08s ease, filter .08s ease;
+    }
+    @media (hover:hover){
+      .cell:hover{ transform: translateY(-1px); filter: brightness(1.08); }
+    }
+
+    .cell .id{ position:absolute; top:-18px; font-size:11px; opacity:.55; }
+    .empty{ background:#0f1320; }
+    .peg{ background:#2b3450; }
+    .peg::after{
+      content:"";
+      width: calc(var(--cell) * 0.48);
+      height: calc(var(--cell) * 0.48);
+      border-radius:999px;
+      background: var(--text);
+      box-shadow: 0 8px 22px rgba(0,0,0,.35);
+    }
+
+    .selected{ outline: 4px solid #6aa8ff; outline-offset:2px; }
+    .hint{ outline: 4px solid #38d996; outline-offset:2px; }
+
+    .bad{ animation: shake .12s linear 0s 2; }
+    @keyframes shake{ 0%{transform:translateX(0)} 50%{transform:translateX(2px)} 100%{transform:translateX(0)} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Peg Solitaire – Triangle</h1>
+
+    <div class="panel">
+      <div class="row">
+        <label>Trou vide :</label>
+        <select id="emptySelect"></select>
+        <button id="resetBtn">Reset</button>
+        <button id="helpBtn">Aide : OFF</button>
+      </div>
+      <div class="status" id="status"></div>
+      <div class="small">
+        Tape un pion (●), puis tape une case vide (·) à <span class="mono">2 cases</span> en ligne.
+        L’Aide surligne <b>uniquement</b> les destinations du pion sélectionné.
+      </div>
+    </div>
+
+    <div class="board">
+      <div class="tri" id="board"></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const SIZE = 5;
+  const boardEl = document.getElementById("board");
+  const statusEl = document.getElementById("status");
+  const emptySelect = document.getElementById("emptySelect");
+  const resetBtn = document.getElementById("resetBtn");
+  const helpBtn = document.getElementById("helpBtn");
+
+  const positions = [];
+  for (let r=0; r<SIZE; r++) for (let c=0; c<=r; c++) positions.push([r,c]);
+
+  const DIRS = [
+    [0, -1], [0, 1],
+    [-1, -1], [1, 1],
+    [-1, 0], [1, 0],
+  ];
+
+  const key = ([r,c]) => `${r},${c}`;
+  const posSet = new Set(positions.map(key));
+  const inBounds = (p) => posSet.has(key(p));
+
+  const posToId = ([r,c]) => 1 + (r*(r+1))/2 + c;
+  const idToPos = (id) => {
+    id -= 1;
+    let r=0;
+    while ((r*(r+1))/2 + r < id) r++;
+    const start = (r*(r+1))/2;
+    return [r, id - start];
+  };
+
+  const TRIPLES = (() => {
+    const triples = [];
+    for (const p of positions){
+      for (const [dr,dc] of DIRS){
+        const over = [p[0]+dr, p[1]+dc];
+        const to   = [p[0]+2*dr, p[1]+2*dc];
+        if (inBounds(over) && inBounds(to)) triples.push([key(p), key(over), key(to)]);
+      }
+    }
+    return triples;
+  })();
+
+  let pegs = new Set();
+  let selected = null;
+  let hints = new Set();
+  let helpEnabled = false;
+
+  function reset(emptyId=1){
+    pegs = new Set(positions.map(key));
+    pegs.delete(key(idToPos(emptyId)));
+    selected = null;
+    hints = new Set();
+    render();
+    updateStatus();
+  }
+
+  function legalMoves(){
+    const moves = [];
+    for (const [a,b,c] of TRIPLES){
+      if (pegs.has(a) && pegs.has(b) && !pegs.has(c)) moves.push([a,b,c]);
+    }
+    return moves;
+  }
+
+  function applyMove(a,b,c){
+    if (pegs.has(a) && pegs.has(b) && !pegs.has(c)){
+      pegs.delete(a); pegs.delete(b); pegs.add(c);
+      return true;
+    }
+    return false;
+  }
+
+  function cellElByKey(kpos){ return boardEl.querySelector(`[data-key="${kpos}"]`); }
+  function flashBad(kpos){
+    const el = cellElByKey(kpos);
+    if (!el) return;
+    el.classList.add("bad");
+    setTimeout(()=>el.classList.remove("bad"), 220);
+  }
+
+  function clearSelection(){ selected = null; hints = new Set(); }
+
+  // ✅ Aide: uniquement destinations du pion sélectionné (sinon rien)
+  function computeHints(){
+    hints = new Set();
+    if (!helpEnabled) return;
+    if (!selected) return;
+
+    for (const [a,_,c] of legalMoves()){
+      if (a === selected) hints.add(c);
+    }
+  }
+
+  function updateStatus(){
+    const moves = legalMoves();
+    const remaining = pegs.size;
+
+    let msg = `Pions restants : <b>${remaining}</b>`;
+
+    // ✅ compteur uniquement si Aide ON
+    if (helpEnabled) msg += ` • Coups possibles : <b>${moves.length}</b>`;
+
+    if (moves.length === 0){
+      let verdict = "";
+      if (remaining === 1) verdict = "🔥 <b>You’re a genius</b> 🔥";
+      else if (remaining === 2) verdict = "🙂 <b>Rocking the chair but not the game</b>";
+      else verdict = "😅 <b>Try again</b>";
+      msg += `<br/>Fin de partie ! ${verdict}`;
+    }
+
+    if (helpEnabled && !selected){
+      msg += `<br/>Aide ON : sélectionne un pion pour voir ses destinations.`;
+    }
+
+    if (selected){
+      const [r,c] = selected.split(",").map(Number);
+      msg += `<br/>Sélection : pion <span class="mono">#${String(posToId([r,c])).padStart(2,"0")}</span>`;
+      if (helpEnabled) msg += ` (destinations surlignées).`;
+      else msg += `.`;
+    }
+
+    statusEl.innerHTML = msg;
+  }
+
+  function render(){
+    boardEl.innerHTML = "";
+    for (let r=0; r<SIZE; r++){
+      const row = document.createElement("div");
+      row.className = "tri-row";
+
+      for (let c=0; c<=r; c++){
+        const kpos = `${r},${c}`;
+        const id = posToId([r,c]);
+
+        const cell = document.createElement("div");
+        cell.className = "cell " + (pegs.has(kpos) ? "peg" : "empty");
+        cell.dataset.key = kpos;
+
+        const idLabel = document.createElement("div");
+        idLabel.className = "id mono";
+        idLabel.textContent = String(id).padStart(2,"0");
+        cell.appendChild(idLabel);
+
+        if (selected === kpos) cell.classList.add("selected");
+        if (hints.has(kpos)) cell.classList.add("hint");
+
+        cell.addEventListener("click", () => onCellClick(kpos));
+        row.appendChild(cell);
+      }
+      boardEl.appendChild(row);
+    }
+  }
+
+  function onCellClick(kpos){
+    const isPeg = pegs.has(kpos);
+
+    if (!selected){
+      if (!isPeg){ flashBad(kpos); return; }
+      selected = kpos;
+      computeHints();
+      render(); updateStatus();
+      return;
+    }
+
+    if (isPeg){
+      selected = kpos;
+      computeHints();
+      render(); updateStatus();
+      return;
+    }
+
+    const [ar,ac] = selected.split(",").map(Number);
+    const [cr,cc] = kpos.split(",").map(Number);
+    const dr = cr - ar, dc = cc - ac;
+
+    const valid = DIRS.some(([r,c]) => r*2 === dr && c*2 === dc);
+    if (!valid){ flashBad(kpos); return; }
+
+    const over = `${ar + dr/2},${ac + dc/2}`;
+    const ok = applyMove(selected, over, kpos);
+    if (!ok){ flashBad(kpos); return; }
+
+    clearSelection();
+    computeHints();
+    render(); updateStatus();
+  }
+
+  function toggleHelp(){
+    helpEnabled = !helpEnabled;
+    helpBtn.textContent = helpEnabled ? "Aide : ON" : "Aide : OFF";
+    computeHints();
+    render();
+    updateStatus();
+  }
+
+  // UI init
+  for (let i=1; i<=15; i++){
+    const opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = String(i).padStart(2,"0");
+    emptySelect.appendChild(opt);
+  }
+  emptySelect.value = "1";
+
+  resetBtn.addEventListener("click", () => { reset(parseInt(emptySelect.value, 10)); computeHints(); render(); updateStatus(); });
+  helpBtn.addEventListener("click", toggleHelp);
+
+  helpBtn.textContent = "Aide : OFF";
+  reset(1);
+})();
+</script>
+</body>
+</html>
